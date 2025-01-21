@@ -4,7 +4,7 @@
 [![Total Downloads](https://img.shields.io/packagist/dt/soiposervices/httpauth.svg?style=flat-square)](https://packagist.org/packages/soiposervices/httpauth)
 ![GitHub Actions](https://github.com/soiposervices/httpauth/actions/workflows/main.yml/badge.svg)
 
-This is where your description should go. Try and limit it to a paragraph or two, and maybe throw in a mention of what PSRs you support to avoid any confusion with users and contributors.
+This package provides a simple http auth middleware. It can be enable for specific environments and it allows white listed ip to skip the auth check.
 
 ## Installation
 
@@ -16,9 +16,18 @@ composer require soiposervices/httpauth
 
 ## Usage
 
-```php
-// Usage description here
-```
+Make sure 
+
+To use this package simply add the HttpAuth middleware to the routes your want to enable the authentication.
+
+You can set the admin and password, using the env variables *HTTP_AUTH_USER* and *HTTP_AUTH_PASS* 
+
+ 
+To whitelist some ip addresses set a comma delimited string in the env variable *HTTP_AUTH_WHITELIST*
+
+
+To enable for specific enviroments set the env vairable *HTTP_AUTH_ENABLED_ENV* eg: "prod,stage"
+
 
 ### Testing
 

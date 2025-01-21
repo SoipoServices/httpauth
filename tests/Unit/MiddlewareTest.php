@@ -13,7 +13,7 @@ test('is whitelisted ip', function () {
 
     $request = Request::create("/");
     
-    Config::set('httpauth.whitelist',['127.0.0.1']);
+    Config::set('httpauth.whitelist','127.0.0.1');
 
     $middleware = new HttpAuth();
     $next = function()
@@ -22,7 +22,8 @@ test('is whitelisted ip', function () {
     };
     $response = $middleware->handle($request, $next);
 
-    expect($response)->toBeNull();
+    expect($response)->toBeInstanceOf(Response::class);   
+
 });
 
 
@@ -38,14 +39,31 @@ test('Is not enabled in environment', function () {
     };
     $response = $middleware->handle($request, $next);
 
-    expect($response)->toBeNull();
+    expect($response)->toBeInstanceOf(Response::class);
 });
 
+test('Is enabled by default', function () {
+
+    $request = Request::create("/");
+    Config::set('httpauth.environments','');
+
+    $middleware = new HttpAuth();
+    $next = function()
+    {
+        return response('This is a secret place');
+    };
+    try {
+        $middleware->handle($request, $next);
+    } catch (HttpException $e) {
+        expect($e->getStatusCode())->toBe(Response::HTTP_UNAUTHORIZED);
+    }
+    
+});
 
 test('Login with wrong credentials', function () {
 
     $request = Request::create("/");
-    $request->headers->set('Authorization',"123456".base64_encode(("user:password")));
+    $request->headers->set('Authorization',"Basic ".base64_encode(("user:password")));
 
     $next = function()
     {
@@ -56,7 +74,11 @@ test('Login with wrong credentials', function () {
 
     $middleware = new HttpAuth();
 
-    expect($middleware->handle($request, $next))->toThrow(HttpException::class);
+    try {
+        $middleware->handle($request, $next);
+    } catch (HttpException $e) {
+        expect($e->getStatusCode())->toBe(Response::HTTP_UNAUTHORIZED);
+    }
 
 });
 
@@ -79,11 +101,9 @@ test('Login with valid credentials', function () {
 
 });
 
-
 test('Display login form', function () {
 
     $request = Request::create("/");
-    $request->server('REMOTE_ADDR','127.0.0.1');
 
     Config::set('httpauth.environments','testing');
 
@@ -92,7 +112,10 @@ test('Display login form', function () {
     {
         return response('This is a secret place');
     };
-    $response = $middleware->handle($request, $next);
+    try {
+        $middleware->handle($request, $next);
+    } catch (HttpException $e) {
+        expect($e->getStatusCode())->toBe(Response::HTTP_UNAUTHORIZED);
+    }
 
-    expect($response)->toBeNull();
 });

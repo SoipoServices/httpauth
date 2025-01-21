@@ -13,11 +13,11 @@ class HttpAuth
 
     public function handle(Request $request, Closure $next)
     {
-        if (!$this->isWhiteListed() && App::environment($this->getEnabledEnvironments())) {
+        if (!$this->isWhiteListed() && $this->isEnabledInEnv()) {
             if ($request->hasHeader('Authorization') === false) {
                 // Display login prompt
                 header('WWW-Authenticate: Basic realm="HiBit"');
-                exit;
+                throw new HttpException(Response::HTTP_UNAUTHORIZED);
             }
 
             $credentials = base64_decode(substr($request->header('Authorization'), 6));
@@ -26,19 +26,26 @@ class HttpAuth
                 if ($username !== $this->getUser() || $password !== $this->getPassword()) {
                     // Provided username or password does not match, throw an exception
                     // Alternatively, the login prompt can be displayed once more
+                    header('WWW-Authenticate: Basic realm="HiBit"');
                     throw new HttpException(Response::HTTP_UNAUTHORIZED);
                 }
             }
             
             return $next($request);
         }
+        return $next($request);
     }
 
-    protected function getEnabledEnvironments():array{
-        return explode(',',config('httpauth.environments'));
-     }
+    protected function isEnabledInEnv():bool{
+        $config = config('httpauth.environments');
+        if(empty($config)){
+            return true;
+        }
+        return App::environment(explode(',',$config));
+        
+    }
 
-     
+
     protected function getUser():string{
        return config('httpauth.username');
     }
@@ -49,17 +56,16 @@ class HttpAuth
 
     protected function isWhiteListed():bool
     {
-        $ips = config('httpauth.whitelist',[]);
+        $ips = explode(',',config('httpauth.whitelist'));
         return array_search(request()->server('REMOTE_ADDR'), $ips) !== false;
     }
 
     protected function isAuthenticated($password):bool
     {
         $username = request()->server('PHP_AUTH_USER');
-        if ($username === null) {
+        if ($username === null || $this->getUser() != $username) {
             return false;
         }
-
-        return $password === request()->server('PHP_AUTH_PW');
+        return $this->getPassword() === request()->server('PHP_AUTH_PW');
     }
 }

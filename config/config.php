@@ -8,6 +8,6 @@ return [
     'username'=>env('HTTP_AUTH_USER','admin'),
     'password'=>env('HTTP_AUTH_PASS','adminpass'),
     //This configuration can be used to whitelist some ip
-    'whitelist' => [],
+    'whitelist' => env('HTTP_AUTH_WHITELIST'),
     'environments' => env('HTTP_AUTH_ENABLED_ENV','prod,stage')
 ];

@@ -1,0 +1,59 @@
+{
+    "name": "soiposervices/httpauth",
+    "description": "A simple package to enable http auth, useful especially for stage and dev environments",
+    "keywords": [
+        "soiposervices",
+        "httpauth"
+    ],
+    "version":"0.0.1",
+    "homepage": "https://github.com/soiposervices/httpauth",
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Luigi Laezza",
+            "email": "luigi@soiposervices.com",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^7.4|^8.0",
+        "illuminate/support": "^8.0"
+    },
+    "require-dev": {
+        "mockery/mockery": "^1.6",
+        "orchestra/testbench": "^6.0",
+        "pestphp/pest": "^1.23"
+    },
+    "autoload": {
+        "psr-4": {
+            "SoipoServices\\HttpAuth\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "SoipoServices\\HttpAuth\\Tests\\": "tests"
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/pest",
+        "test-coverage": "vendor/bin/pest --coverage-html coverage"
+
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "SoipoServices\\HttpAuth\\HttpAuthServiceProvider"
+            ],
+            "aliases": {
+                "HttpAuth": "SoipoServices\\HttpAuth\\HttpAuthFacade"
+            }
+        }
+    }
+}

@@ -4,7 +4,7 @@
 [![Total Downloads](https://img.shields.io/packagist/dt/soiposervices/httpauth.svg?style=flat-square)](https://packagist.org/packages/soiposervices/httpauth)
 ![GitHub Actions](https://github.com/soiposervices/httpauth/actions/workflows/main.yml/badge.svg)
 
-This package provides a simple http auth middleware. It can be enable for specific environments and it allows white listed ip to skip the auth check.
+This laravel package provides a simple http auth middleware. It can be enable for specific environments and it allows white listed ip to skip the auth check.
 
 ## Installation
 
@@ -18,7 +18,7 @@ composer require soiposervices/httpauth
 
 Make sure 
 
-To use this package simply add the HttpAuth middleware to the routes your want to enable the authentication.
+To use this laravel package simply add the HttpAuth middleware to the routes your want to enable the authentication.
 
 You can set the admin and password, using the env variables *HTTP_AUTH_USER* and *HTTP_AUTH_PASS* 
 

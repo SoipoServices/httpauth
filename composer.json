@@ -5,7 +5,7 @@
         "soiposervices",
         "httpauth"
     ],
-    "version":"0.0.2",
+    "version":"0.0.3",
     "homepage": "https://github.com/soiposervices/httpauth",
     "license": "MIT",
     "type": "library",

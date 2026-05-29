@@ -6,38 +6,26 @@ namespace Pest\Support;
 
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
-use Throwable;
 
 /**
  * @internal
  */
 final class HigherOrderTapProxy
 {
-    private const UNDEFINED_PROPERTY = 'Undefined property: P\\';
-
-    /**
-     * The target being tapped.
-     *
-     * @var TestCase
-     */
-    public $target;
-
     /**
      * Create a new tap proxy instance.
      */
-    public function __construct(TestCase $target)
-    {
-        $this->target = $target;
+    public function __construct(
+        public TestCase $target
+    ) {
+        // ..
     }
 
     /**
      * Dynamically sets properties on the target.
-     *
-     * @param mixed $value
      */
-    public function __set(string $property, $value): void
+    public function __set(string $property, mixed $value): void
     {
-        // @phpstan-ignore-next-line
         $this->target->{$property} = $value;
     }
 
@@ -48,34 +36,31 @@ final class HigherOrderTapProxy
      */
     public function __get(string $property)
     {
-        try {
-            // @phpstan-ignore-next-line
+        if (property_exists($this->target, $property)) {
             return $this->target->{$property};
-        } catch (Throwable $throwable) {
-            Reflection::setPropertyValue($throwable, 'file', Backtrace::file());
-            Reflection::setPropertyValue($throwable, 'line', Backtrace::line());
-
-            if (Str::startsWith($message = $throwable->getMessage(), self::UNDEFINED_PROPERTY)) {
-                /** @var ReflectionClass $reflection */
-                $reflection = (new ReflectionClass($this->target))->getParentClass();
-                Reflection::setPropertyValue($throwable, 'message', sprintf('Undefined property %s::$%s', $reflection->getName(), $property));
-            }
-
-            throw $throwable;
         }
+
+        $className = (new ReflectionClass($this->target))->getName();
+
+        if (str_starts_with($className, 'P\\')) {
+            $className = substr($className, 2);
+        }
+
+        trigger_error(sprintf('Undefined property %s::$%s', $className, $property), E_USER_WARNING);
+
+        return null;
     }
 
     /**
      * Dynamically pass method calls to the target.
      *
-     * @param array<int, mixed> $arguments
-     *
+     * @param  array<int, mixed>  $arguments
      * @return mixed
      */
     public function __call(string $methodName, array $arguments)
     {
         $filename = Backtrace::file();
-        $line     = Backtrace::line();
+        $line = Backtrace::line();
 
         return (new HigherOrderMessage($filename, $line, $methodName, $arguments))
             ->call($this->target);

@@ -12,11 +12,12 @@ use Symfony\Component\Console\Output\OutputInterface;
 /**
  * @internal
  */
-final class DumpCommand extends BaseCommand
+final class DumpCommand extends BaseCommand // @phpstan-ignore-line
 {
     protected function configure(): void
     {
-        $this->setName('pest:dump-plugins');
+        $this->setName('pest:dump-plugins')
+            ->setDescription('Dump all installed Pest plugins to the plugin cache.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -28,7 +29,7 @@ final class DumpCommand extends BaseCommand
         }
 
         $vendorDirectory = $composer->getConfig()->get('vendor-dir');
-        $plugins         = [];
+        $plugins = [];
 
         $packages = $composer->getRepositoryManager()->getLocalRepository()->getCanonicalPackages();
 
@@ -36,7 +37,7 @@ final class DumpCommand extends BaseCommand
 
         /** @var \Composer\Package\PackageInterface $package */
         foreach ($packages as $package) {
-            $extra   = $package->getExtra();
+            $extra = $package->getExtra();
             // @phpstan-ignore-next-line
             $plugins = array_merge($plugins, $extra['pest']['plugins'] ?? []);
         }

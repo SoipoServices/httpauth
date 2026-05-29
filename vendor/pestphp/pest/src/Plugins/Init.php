@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace Pest\Plugins;
 
+use Composer\InstalledVersions;
 use Pest\Console\Thanks;
 use Pest\Contracts\Plugins\HandlesArguments;
+use Pest\Support\View;
 use Pest\TestSuite;
+use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * @internal
  */
-final class Init implements HandlesArguments
+final readonly class Init implements HandlesArguments
 {
     /**
      * The option the triggers the init job.
@@ -23,33 +26,33 @@ final class Init implements HandlesArguments
      * The files that will be created.
      */
     private const STUBS = [
-        'phpunit.xml'     => 'phpunit.xml',
-        'Pest.php'        => 'tests/Pest.php',
-        'ExampleTest.php' => 'tests/ExampleTest.php',
+        'phpunit.xml.stub' => 'phpunit.xml',
+        'Pest.php.stub' => 'tests/Pest.php',
+        'TestCase.php.stub' => 'tests/TestCase.php',
+        'Unit/ExampleTest.php.stub' => 'tests/Unit/ExampleTest.php',
+        'Feature/ExampleTest.php.stub' => 'tests/Feature/ExampleTest.php',
     ];
-
-    /**
-     * @var OutputInterface
-     */
-    private $output;
-
-    /**
-     * @var TestSuite
-     */
-    private $testSuite;
 
     /**
      * Creates a new Plugin instance.
      */
-    public function __construct(TestSuite $testSuite, OutputInterface $output)
-    {
-        $this->testSuite = $testSuite;
-        $this->output    = $output;
+    public function __construct(
+        private TestSuite $testSuite,
+        private InputInterface $input,
+        private OutputInterface $output
+    ) {
+        // ..
     }
 
+    /**
+     * {@inheritdoc}
+     */
     public function handleArguments(array $arguments): array
     {
-        if (!array_key_exists(1, $arguments) || $arguments[1] !== self::INIT_OPTION) {
+        if (! array_key_exists(1, $arguments)) {
+            return $arguments;
+        }
+        if ($arguments[1] !== self::INIT_OPTION) {
             return $arguments;
         }
 
@@ -57,72 +60,65 @@ final class Init implements HandlesArguments
 
         $this->init();
 
-        return array_values($arguments);
+        exit(0);
     }
 
-    private function init(): void
+    /**
+     * Initializes the tests directory.
+     */
+    public function init(): void
     {
         $testsBaseDir = "{$this->testSuite->rootPath}/tests";
 
-        if (!is_dir($testsBaseDir)) {
-            if (!mkdir($testsBaseDir) && !is_dir($testsBaseDir)) {
-                $this->output->writeln(sprintf(
-                    "\n  <fg=white;bg=red;options=bold> ERROR </> Directory `%s` was not created.</>",
-                    $testsBaseDir
-                ));
-
-                return;
-            }
-
-            $this->output->writeln(
-                '  <fg=black;bg=green;options=bold> DONE </> Created `tests` directory.</>',
-            );
+        if (! is_dir($testsBaseDir)) {
+            mkdir($testsBaseDir);
         }
+
+        View::render('components.badge', [
+            'type' => 'INFO',
+            'content' => 'Preparing tests directory.',
+        ]);
 
         foreach (self::STUBS as $from => $to) {
-            $fromPath = __DIR__ . "/../../stubs/init/{$from}";
-            $toPath   = "{$this->testSuite->rootPath}/{$to}";
+            if ($this->isLaravelInstalled()) {
+                $fromPath = __DIR__."/../../stubs/init-laravel/{$from}";
+            } else {
+                $fromPath = __DIR__."/../../stubs/init/{$from}";
+            }
+
+            $toPath = "{$this->testSuite->rootPath}/{$to}";
 
             if (file_exists($toPath)) {
-                $this->output->writeln(sprintf(
-                    '  <fg=black;bg=yellow;options=bold> INFO </> File `%s` already exists, skipped.</>',
-                    $to
-                ));
+                View::render('components.two-column-detail', [
+                    'left' => $to,
+                    'right' => 'File already exists.',
+                ]);
 
                 continue;
             }
 
-            if ($from === 'phpunit.xml' && file_exists($toPath . '.dist')) {
-                $this->output->writeln(sprintf(
-                    '  <fg=black;bg=yellow;options=bold> INFO </> File `%s` already exists, skipped.</>',
-                    $to . '.dist'
-                ));
-
-                continue;
+            if (! is_dir(dirname($toPath))) {
+                mkdir(dirname($toPath));
             }
 
-            if (!copy($fromPath, $toPath)) {
-                $this->output->writeln(sprintf(
-                    '<fg=black;bg=red>[WARNING] Failed to copy stub `%s` to `%s`</>',
-                    $from,
-                    $toPath
-                ));
+            copy($fromPath, $toPath);
 
-                continue;
-            }
-
-            $this->output->writeln(sprintf(
-                '  <fg=black;bg=green;options=bold> DONE </> Created `%s` file.</>',
-                $to
-            ));
+            View::render('components.two-column-detail', [
+                'left' => $to,
+                'right' => 'File created.',
+            ]);
         }
 
-        $this->output->writeln(
-            "\n  <fg=black;bg=green;options=bold> DONE </> Pest initialised.</>\n",
-        );
+        View::render('components.new-line');
 
-        (new Thanks($this->output))();
+        (new Thanks($this->input, $this->output))();
+    }
 
-        exit(0);
+    /**
+     * Checks if laravel is installed through Composer
+     */
+    private function isLaravelInstalled(): bool
+    {
+        return InstalledVersions::isInstalled('laravel/framework');
     }
 }

@@ -6,7 +6,7 @@ namespace Pest\Repositories;
 
 use Closure;
 use Mockery;
-use Pest\Exceptions\AfterEachAlreadyExist;
+use Pest\PendingCalls\AfterEachCall;
 use Pest\Support\ChainableClosure;
 use Pest\Support\NullClosure;
 
@@ -18,28 +18,33 @@ final class AfterEachRepository
     /**
      * @var array<string, Closure>
      */
-    private $state = [];
+    private array $state = [];
 
     /**
      * Sets a after each closure.
      */
-    public function set(string $filename, Closure $closure): void
+    public function set(string $filename, AfterEachCall $afterEachCall, Closure $afterEachTestCase): void
     {
         if (array_key_exists($filename, $this->state)) {
-            throw new AfterEachAlreadyExist($filename);
+            $fromAfterEachTestCase = $this->state[$filename];
+
+            $afterEachTestCase = ChainableClosure::bound($fromAfterEachTestCase, $afterEachTestCase)
+                ->bindTo($afterEachCall, $afterEachCall::class);
         }
 
-        $this->state[$filename] = $closure;
+        assert($afterEachTestCase instanceof Closure);
+
+        $this->state[$filename] = $afterEachTestCase;
     }
 
     /**
-     * Gets a after each closure by the given filename.
+     * Gets an after each closure by the given filename.
      */
     public function get(string $filename): Closure
     {
         $afterEach = $this->state[$filename] ?? NullClosure::create();
 
-        return ChainableClosure::from(function (): void {
+        return ChainableClosure::bound(function (): void {
             if (class_exists(Mockery::class)) {
                 if ($container = Mockery::getContainer()) {
                     /* @phpstan-ignore-next-line */

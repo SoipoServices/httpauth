@@ -29,8 +29,7 @@ final class Loader
     /**
      * returns an array of pest plugins to execute.
      *
-     * @param string $interface the interface for the hook to execute
-     *
+     * @param  string  $interface  the interface for the hook to execute
      * @return array<int, object> list of plugins
      */
     public static function getPlugins(string $interface): array
@@ -47,7 +46,7 @@ final class Loader
 
     public static function reset(): void
     {
-        self::$loaded    = false;
+        self::$loaded = false;
         self::$instances = [];
     }
 
@@ -58,11 +57,14 @@ final class Loader
      */
     private static function getPluginInstances(): array
     {
-        if (!self::$loaded) {
-            $cachedPlugins = sprintf('%s/vendor/pest-plugins.json', getcwd());
-            $container     = Container::getInstance();
+        if (! self::$loaded) {
+            $cachedPlugins = sprintf(
+                '%s/../pest-plugins.json',
+                $GLOBALS['_composer_bin_dir'] ?? getcwd().'/vendor/bin',
+            );
+            $container = Container::getInstance();
 
-            if (!file_exists($cachedPlugins)) {
+            if (! file_exists($cachedPlugins)) {
                 return [];
             }
 
@@ -72,18 +74,33 @@ final class Loader
             }
 
             try {
-                /** @var array<int, string>  $pluginClasses */
+                /** @var array<int, class-string> $pluginClasses */
                 $pluginClasses = json_decode($content, false, 512, JSON_THROW_ON_ERROR);
             } catch (JsonException $ex) {
                 $pluginClasses = [];
             }
 
+            usort($pluginClasses, function (string $pluginA, string $pluginB) {
+                $isOfficialPlugin = fn (string $plugin) => str_starts_with($plugin, 'Pest\\Plugins\\');
+
+                return match (true) {
+                    $isOfficialPlugin($pluginA) && $isOfficialPlugin($pluginB),
+                    ! $isOfficialPlugin($pluginA) && ! $isOfficialPlugin($pluginB) => 0,
+                    $isOfficialPlugin($pluginA) => 1,
+                    default => -1,
+                };
+            });
+
             self::$instances = array_map(
                 function ($class) use ($container) {
-                    return $container->get($class);
+                    /** @var object $object */
+                    $object = $container->get($class);
+
+                    return $object;
                 },
-                $pluginClasses
+                $pluginClasses,
             );
+
             self::$loaded = true;
         }
 

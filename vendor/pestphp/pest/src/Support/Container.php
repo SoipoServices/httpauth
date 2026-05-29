@@ -14,39 +14,36 @@ use ReflectionParameter;
 final class Container
 {
     /**
-     * @var self
+     * The instance of the container.
      */
-    private static $instance;
+    private static ?Container $instance = null;
 
     /**
-     * @var array<string, mixed>
+     * @var array<string, object|string>
      */
-    private $instances = [];
+    private array $instances = [];
 
     /**
      * Gets a new or already existing container.
      */
     public static function getInstance(): self
     {
-        if (static::$instance === null) {
-            static::$instance = new static();
+        if (! self::$instance instanceof Container) {
+            self::$instance = new self;
         }
 
-        return static::$instance;
+        return self::$instance;
     }
 
     /**
      * Gets a dependency from the container.
-     *
-     * @return object
      */
-    public function get(string $id)
+    public function get(string $id): object|string
     {
-        if (array_key_exists($id, $this->instances)) {
-            return $this->instances[$id];
+        if (! array_key_exists($id, $this->instances)) {
+            /** @var class-string $id */
+            $this->instances[$id] = $this->build($id);
         }
-
-        $this->instances[$id] = $this->build($id);
 
         return $this->instances[$id];
     }
@@ -54,33 +51,39 @@ final class Container
     /**
      * Adds the given instance to the container.
      *
-     * @param mixed $instance
+     * @return $this
      */
-    public function add(string $id, $instance): void
+    public function add(string $id, object|string $instance): self
     {
         $this->instances[$id] = $instance;
+
+        return $this;
     }
 
     /**
      * Tries to build the given instance.
+     *
+     * @template TObject of object
+     *
+     * @param  class-string<TObject>  $id
+     * @return TObject
      */
     private function build(string $id): object
     {
-        /** @phpstan-ignore-next-line */
         $reflectionClass = new ReflectionClass($id);
 
         if ($reflectionClass->isInstantiable()) {
             $constructor = $reflectionClass->getConstructor();
 
-            if ($constructor !== null) {
+            if ($constructor instanceof \ReflectionMethod) {
                 $params = array_map(
-                    function (ReflectionParameter $param) use ($id) {
+                    function (ReflectionParameter $param) use ($id): object|string {
                         $candidate = Reflection::getParameterClassName($param);
 
                         if ($candidate === null) {
                             $type = $param->getType();
                             /* @phpstan-ignore-next-line */
-                            if ($type !== null && $type->isBuiltin()) {
+                            if ($type instanceof \ReflectionType && $type->isBuiltin()) {
                                 $candidate = $param->getName();
                             } else {
                                 throw ShouldNotHappen::fromMessage(sprintf('The type of `$%s` in `%s` cannot be determined.', $id, $param->getName()));

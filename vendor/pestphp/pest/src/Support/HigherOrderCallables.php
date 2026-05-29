@@ -6,22 +6,18 @@ namespace Pest\Support;
 
 use Closure;
 use Pest\Expectation;
-use Pest\PendingObjects\TestCall;
-use PHPUnit\Framework\TestCase;
 
 /**
  * @internal
  */
-final class HigherOrderCallables
+final readonly class HigherOrderCallables
 {
     /**
-     * @var object
+     * Creates a new Higher Order Callables instances.
      */
-    private $target;
-
-    public function __construct(object $target)
+    public function __construct(private object $target)
     {
-        $this->target = $target;
+        // ..
     }
 
     /**
@@ -29,13 +25,15 @@ final class HigherOrderCallables
      *
      * Create a new expectation. Callable values will be executed prior to returning the new expectation.
      *
-     * @param callable|TValue $value
-     *
+     * @param  (Closure():TValue)|TValue  $value
      * @return Expectation<TValue>
      */
-    public function expect($value)
+    public function expect(mixed $value): Expectation
     {
-        return new Expectation($value instanceof Closure ? Reflection::bindCallableWithData($value) : $value);
+        /** @var TValue $value */
+        $value = $value instanceof Closure ? Reflection::bindCallableWithData($value) : $value;
+
+        return new Expectation($value);
     }
 
     /**
@@ -43,21 +41,19 @@ final class HigherOrderCallables
      *
      * Create a new expectation. Callable values will be executed prior to returning the new expectation.
      *
-     * @param callable|TValue $value
-     *
-     * @return Expectation<TValue>
+     * @param  callable|TValue  $value
+     * @return Expectation<(callable(): mixed)|TValue>
      */
-    public function and($value)
+    public function and(mixed $value): Expectation
     {
+        // @phpstan-ignore-next-line
         return $this->expect($value);
     }
 
     /**
-     * Tap into the test case to perform an action and return the test case.
-     *
-     * @return TestCall|TestCase|object
+     * Execute the given callable after the test has executed the setup method.
      */
-    public function tap(callable $callable)
+    public function defer(callable $callable): object
     {
         Reflection::bindCallableWithData($callable);
 

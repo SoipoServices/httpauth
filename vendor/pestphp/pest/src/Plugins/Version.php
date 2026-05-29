@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Pest\Plugins;
 
 use Pest\Contracts\Plugins\HandlesArguments;
-use Symfony\Component\Console\Output\OutputInterface;
+use Pest\Support\View;
 
 use function Pest\version;
 
@@ -14,25 +14,19 @@ use function Pest\version;
  */
 final class Version implements HandlesArguments
 {
-    /**
-     * @var OutputInterface
-     */
-    private $output;
+    use Concerns\HandleArguments;
 
     /**
-     * Creates a new instance of the plugin.
+     * {@inheritDoc}
      */
-    public function __construct(OutputInterface $output)
-    {
-        $this->output = $output;
-    }
-
     public function handleArguments(array $arguments): array
     {
-        if (in_array('--version', $arguments, true)) {
-            $this->output->writeln(
-                sprintf('Pest    %s', version()),
-            );
+        if ($this->hasArgument('--version', $arguments)) {
+            View::render('version', [
+                'version' => version(),
+            ]);
+
+            exit(0);
         }
 
         return $arguments;

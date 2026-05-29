@@ -5,19 +5,16 @@ declare(strict_types=1);
 namespace Pest\Support;
 
 /**
- * Credits: most of this class methods and implementations
- * belongs to the Arr helper of laravel/framework project
- * (https://github.com/laravel/framework).
- *
  * @internal
  */
 final class Arr
 {
     /**
-     * @param array<mixed> $array
-     * @param string|int   $key
+     * Checks if the given array has the given key.
+     *
+     * @param  array<array-key, mixed>  $array
      */
-    public static function has(array $array, $key): bool
+    public static function has(array $array, string|int $key): bool
     {
         $key = (string) $key;
 
@@ -37,13 +34,11 @@ final class Arr
     }
 
     /**
-     * @param array<mixed> $array
-     * @param string|int   $key
-     * @param null         $default
+     * Gets the given key value.
      *
-     * @return array|mixed|null
+     * @param  array<array-key, mixed>  $array
      */
-    public static function get(array $array, $key, $default = null)
+    public static function get(array $array, string|int $key, mixed $default = null): mixed
     {
         $key = (string) $key;
 
@@ -51,7 +46,7 @@ final class Arr
             return $array[$key];
         }
 
-        if (strpos($key, '.') === false) {
+        if (! str_contains($key, '.')) {
             return $array[$key] ?? $default;
         }
 
@@ -64,5 +59,36 @@ final class Arr
         }
 
         return $array;
+    }
+
+    /**
+     * Flatten a multi-dimensional associative array with dots.
+     *
+     * @param  array<array-key, mixed>  $array
+     * @return array<int|string, mixed>
+     */
+    public static function dot(array $array, string $prepend = ''): array
+    {
+        $results = [];
+
+        foreach ($array as $key => $value) {
+            if (is_array($value) && $value !== []) {
+                $results = array_merge($results, self::dot($value, $prepend.$key.'.'));
+            } else {
+                $results[$prepend.$value] = $value;
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Returns the value of the last element or false for empty array
+     *
+     * @param  array<array-key, mixed>  $array
+     */
+    public static function last(array $array): mixed
+    {
+        return end($array);
     }
 }

@@ -14,7 +14,7 @@ final class Environment implements HandlesArguments
     /**
      * The continuous integration environment.
      */
-    public const CI    = 'ci';
+    public const CI = 'ci';
 
     /**
      * The local environment.
@@ -22,23 +22,12 @@ final class Environment implements HandlesArguments
     public const LOCAL = 'local';
 
     /**
-     * @var \Pest\Plugins\Environment|null
-     */
-    private static $instance;
-
-    /**
      * The current environment.
-     *
-     * @var string|null
      */
-    private static $name;
+    private static ?string $name = null;
 
     /**
-     * Allows to handle custom command line arguments.
-     *
-     * @param array<int, string> $arguments
-     *
-     * @return array<int, string> the updated list of arguments
+     * {@inheritdoc}
      */
     public function handleArguments(array $arguments): array
     {
@@ -56,7 +45,7 @@ final class Environment implements HandlesArguments
     /**
      * Gets the environment name.
      */
-    public static function name(string $name = null): string
+    public static function name(?string $name = null): string
     {
         if (is_string($name)) {
             self::$name = $name;

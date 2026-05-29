@@ -4,63 +4,87 @@ declare(strict_types=1);
 
 namespace Pest\Console;
 
+use Pest\Bootstrappers\BootView;
+use Pest\Support\View;
 use Symfony\Component\Console\Helper\SymfonyQuestionHelper;
 use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\ConfirmationQuestion;
 
 /**
  * @internal
  */
-final class Thanks
+final readonly class Thanks
 {
-    /** @var array<int, string> */
+    /**
+     * The support options.
+     *
+     * @var array<string, string>
+     */
     private const FUNDING_MESSAGES = [
-        '',
-        '  - Star or contribute to Pest:',
-        '    <options=bold>https://github.com/pestphp/pest</>',
-        '  - Tweet something about Pest on Twitter:',
-        '    <options=bold>https://twitter.com/pestphp</>',
-        '  - Sponsor the creator:',
-        '    <options=bold>https://github.com/sponsors/nunomaduro</>',
+        'Star' => 'https://github.com/pestphp/pest',
+        'YouTube' => 'https://youtube.com/@nunomaduro',
+        'TikTok' => 'https://tiktok.com/@nunomaduro',
+        'Twitch' => 'https://twitch.tv/enunomaduro',
+        'LinkedIn' => 'https://linkedin.com/in/nunomaduro',
+        'Instagram' => 'https://instagram.com/enunomaduro',
+        'X' => 'https://x.com/enunomaduro',
+        'Sponsor' => 'https://github.com/sponsors/nunomaduro',
     ];
 
-    /** @var OutputInterface */
-    private $output;
-
-    public function __construct(OutputInterface $output)
-    {
-        $this->output = $output;
+    /**
+     * Creates a new Console Command instance.
+     */
+    public function __construct(
+        private InputInterface $input,
+        private OutputInterface $output
+    ) {
+        // ..
     }
 
     /**
-     * Asks the user to support Pest.
+     * Executes the Console Command.
      */
     public function __invoke(): void
     {
-        $wantsToSupport = (new SymfonyQuestionHelper())->ask(
-            new ArrayInput([]),
-            $this->output,
-            new ConfirmationQuestion(
-                'Can you quickly <options=bold>star our GitHub repository</>? 🙏🏻',
-                true,
-            )
-        );
+        $bootstrapper = new BootView($this->output);
+        $bootstrapper->boot();
 
-        if ($wantsToSupport === true) {
-            if (PHP_OS_FAMILY == 'Darwin') {
-                exec('open https://github.com/pestphp/pest');
+        $wantsToSupport = false;
+
+        if (getenv('PEST_NO_SUPPORT') !== 'true' && $this->input->isInteractive()) {
+            $wantsToSupport = (new SymfonyQuestionHelper)->ask(
+                new ArrayInput([]),
+                $this->output,
+                new ConfirmationQuestion(
+                    ' <options=bold>Wanna show Pest some love by starring it on GitHub?</>',
+                    false,
+                )
+            );
+
+            View::render('components.new-line');
+
+            foreach (self::FUNDING_MESSAGES as $message => $link) {
+                View::render('components.two-column-detail', [
+                    'left' => $message,
+                    'right' => $link,
+                ]);
             }
-            if (PHP_OS_FAMILY == 'Windows') {
-                exec('start https://github.com/pestphp/pest');
-            }
-            if (PHP_OS_FAMILY == 'Linux') {
-                exec('xdg-open https://github.com/pestphp/pest');
-            }
+
+            View::render('components.new-line');
         }
 
-        foreach (self::FUNDING_MESSAGES as $message) {
-            $this->output->writeln($message);
+        if ($wantsToSupport === true) {
+            if (PHP_OS_FAMILY === 'Darwin') {
+                exec('open https://github.com/pestphp/pest');
+            }
+            if (PHP_OS_FAMILY === 'Windows') {
+                exec('start https://github.com/pestphp/pest');
+            }
+            if (PHP_OS_FAMILY === 'Linux') {
+                exec('xdg-open https://github.com/pestphp/pest');
+            }
         }
     }
 }

@@ -4,16 +4,20 @@ declare(strict_types=1);
 
 namespace Pest\Factories;
 
-use Closure;
 use ParseError;
 use Pest\Concerns;
 use Pest\Contracts\HasPrintableTestCaseName;
-use Pest\Datasets;
+use Pest\Evaluators\Attributes;
+use Pest\Exceptions\DatasetMissing;
 use Pest\Exceptions\ShouldNotHappen;
-use Pest\Support\HigherOrderMessageCollection;
+use Pest\Exceptions\TestAlreadyExist;
+use Pest\Exceptions\TestClosureMustNotBeStatic;
+use Pest\Exceptions\TestDescriptionMissing;
+use Pest\Factories\Concerns\HigherOrderable;
+use Pest\Support\Reflection;
 use Pest\Support\Str;
 use Pest\TestSuite;
-use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\TestDox;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -22,220 +26,226 @@ use RuntimeException;
  */
 final class TestCaseFactory
 {
-    /**
-     * Holds the test filename.
-     *
-     * @readonly
-     *
-     * @var string
-     */
-    public $filename;
+    use HigherOrderable;
 
     /**
-     * Marks this test case as only.
+     * The list of attributes.
      *
-     * @readonly
-     *
-     * @var bool
+     * @var array<int, Attribute>
      */
-    public $only = false;
+    public array $attributes = [];
 
     /**
-     * Holds the test description.
+     * The FQN of the Test Case class.
      *
-     * If the description is null, means that it
-     * will be created with the given assertions.
-     *
-     * @var string|null
+     * @var class-string
      */
-    public $description;
+    public string $class = TestCase::class;
 
     /**
-     * Holds the test closure.
+     * The list of class methods.
      *
-     * @readonly
-     *
-     * @var Closure
+     * @var array<string, TestCaseMethodFactory>
      */
-    public $test;
+    public array $methods = [];
 
     /**
-     * Holds the dataset, if any.
+     * The list of class traits.
      *
-     * @var array<Closure|iterable<int|string, mixed>|string>
+     * @var array <int, class-string>
      */
-    public $datasets = [];
-
-    /**
-     * The FQN of the test case class.
-     *
-     * @var string
-     */
-    public $class = TestCase::class;
-
-    /**
-     * An array of FQN of the class traits.
-     *
-     * @var array <int, string>
-     */
-    public $traits = [
+    public array $traits = [
         Concerns\Testable::class,
         Concerns\Expectable::class,
     ];
 
     /**
-     * Holds the higher order messages
-     *  for the factory that are proxyble.
-     *
-     * @var HigherOrderMessageCollection
+     * Creates a new Factory instance.
      */
-    public $factoryProxies;
-
-    /**
-     * Holds the higher order
-     * messages that are proxyble.
-     *
-     * @var HigherOrderMessageCollection
-     */
-    public $proxies;
-
-    /**
-     * Holds the higher order
-     * messages that are chainable.
-     *
-     * @var HigherOrderMessageCollection
-     */
-    public $chains;
-
-    /**
-     * Creates a new anonymous test case pending object.
-     */
-    public function __construct(string $filename, string $description = null, Closure $closure = null)
-    {
-        $this->filename    = $filename;
-        $this->description = $description;
-        $this->test        = $closure ?? function (): void {
-            if (Assert::getCount() === 0) {
-                self::markTestIncomplete(); // @phpstan-ignore-line
-            }
-        };
-
-        $this->factoryProxies = new HigherOrderMessageCollection();
-        $this->proxies        = new HigherOrderMessageCollection();
-        $this->chains         = new HigherOrderMessageCollection();
+    public function __construct(
+        public string $filename
+    ) {
+        $this->bootHigherOrderable();
     }
 
-    /**
-     * Builds the anonymous test case.
-     *
-     * @return array<int, TestCase>
-     */
-    public function build(TestSuite $testSuite): array
+    public function make(): void
     {
-        if ($this->description === null) {
-            throw ShouldNotHappen::fromMessage('Description can not be empty.');
+        $methods = $this->methods;
+
+        if ($methods !== []) {
+            $this->evaluate($this->filename, $methods);
         }
-
-        $chains      = $this->chains;
-        $proxies     = $this->proxies;
-        $factoryTest = $this->test;
-
-        /**
-         * @return mixed
-         */
-        $test = function () use ($chains, $proxies, $factoryTest) {
-            $proxies->proxy($this);
-            $chains->chain($this);
-
-            /* @phpstan-ignore-next-line */
-            return call_user_func(Closure::bind($factoryTest, $this, get_class($this)), ...func_get_args());
-        };
-
-        $className = $this->makeClassFromFilename($this->filename);
-
-        $createTest = function ($description, $data) use ($className, $test) {
-            $testCase = new $className($test, $description, $data);
-            $this->factoryProxies->proxy($testCase);
-
-            return $testCase;
-        };
-
-        $datasets = Datasets::resolve($this->description, $this->datasets);
-
-        return array_map($createTest, array_keys($datasets), $datasets);
     }
 
     /**
-     * Makes a fully qualified class name from the given filename.
+     * Creates a Test Case class using a runtime evaluate.
+     *
+     * @param  array<string, TestCaseMethodFactory>  $methods
      */
-    public function makeClassFromFilename(string $filename): string
+    public function evaluate(string $filename, array $methods): void
     {
         if ('\\' === DIRECTORY_SEPARATOR) {
             // In case Windows, strtolower drive name, like in UsesCall.
-            $filename = (string) preg_replace_callback('~^(?P<drive>[a-z]+:\\\)~i', function ($match): string {
-                return strtolower($match['drive']);
-            }, $filename);
+            $filename = (string) preg_replace_callback('~^(?P<drive>[a-z]+:\\\)~i', static fn (array $match): string => strtolower($match['drive']), $filename);
         }
 
-        $filename     = str_replace('\\\\', '\\', addslashes((string) realpath($filename)));
-        $rootPath     = TestSuite::getInstance()->rootPath;
-        $relativePath = str_replace($rootPath . DIRECTORY_SEPARATOR, '', $filename);
-        $relativePath = dirname(ucfirst($relativePath)) . DIRECTORY_SEPARATOR . basename($relativePath, '.php');
+        $filename = str_replace('\\\\', '\\', addslashes((string) realpath($filename)));
+        $rootPath = TestSuite::getInstance()->rootPath;
+        $relativePath = str_replace($rootPath.DIRECTORY_SEPARATOR, '', $filename);
+
+        $relativePath = ltrim($relativePath, DIRECTORY_SEPARATOR);
+
+        $basename = basename($relativePath, '.php');
+
+        $dotPos = strpos($basename, '.');
+
+        if ($dotPos !== false) {
+            $basename = substr($basename, 0, $dotPos);
+        }
+
+        $relativePath = dirname(ucfirst($relativePath)).DIRECTORY_SEPARATOR.$basename;
+
         $relativePath = str_replace(DIRECTORY_SEPARATOR, '\\', $relativePath);
 
         // Strip out any %-encoded octets.
         $relativePath = (string) preg_replace('|%[a-fA-F0-9][a-fA-F0-9]|', '', $relativePath);
         // Remove escaped quote sequences (maintain namespace)
-        $relativePath = str_replace(array_map(function (string $quote): string {
-            return sprintf('\\%s', $quote);
-        }, ['\'', '"']), '', $relativePath);
+        $relativePath = str_replace(array_map(fn (string $quote): string => sprintf('\\%s', $quote), ['\'', '"']), '', $relativePath);
         // Limit to A-Z, a-z, 0-9, '_', '-'.
         $relativePath = (string) preg_replace('/[^A-Za-z0-9\\\\]/', '', $relativePath);
 
-        $classFQN = 'P\\' . $relativePath;
+        $classFQN = 'P\\'.$relativePath;
+
         if (class_exists($classFQN)) {
-            return $classFQN;
+            return;
         }
 
         $hasPrintableTestCaseClassFQN = sprintf('\%s', HasPrintableTestCaseName::class);
-        $traitsCode                   = sprintf('use %s;', implode(', ', array_map(function ($trait): string {
-            return sprintf('\%s', $trait);
-        }, $this->traits)));
+        $traitsCode = sprintf('use %s;', implode(', ', array_map(
+            static fn (string $trait): string => sprintf('\%s', $trait), $this->traits))
+        );
 
-        $partsFQN  = explode('\\', $classFQN);
+        $partsFQN = explode('\\', $classFQN);
         $className = array_pop($partsFQN);
         $namespace = implode('\\', $partsFQN);
         $baseClass = sprintf('\%s', $this->class);
 
-        if ('' === trim($className)) {
-            $className = 'InvalidTestName' . Str::random();
-            $classFQN .= $className;
+        if (trim($className) === '') {
+            $className = 'InvalidTestName'.Str::random();
         }
+
+        $this->attributes = [
+            new Attribute(
+                TestDox::class,
+                [$this->filename],
+            ),
+            ...$this->attributes,
+        ];
+
+        $attributesCode = Attributes::code($this->attributes);
+
+        $methodsCode = implode('', array_map(
+            fn (TestCaseMethodFactory $methodFactory): string => $methodFactory->buildForEvaluation(),
+            $methods
+        ));
 
         try {
-            eval("
-                namespace $namespace;
+            $classCode = <<<PHP
+            namespace $namespace;
 
-                #[\AllowDynamicProperties]
-                final class $className extends $baseClass implements $hasPrintableTestCaseClassFQN {
-                    $traitsCode
+            use Pest\Repositories\DatasetsRepository as __PestDatasets;
+            use Pest\TestSuite as __PestTestSuite;
 
-                    private static \$__filename = '$filename';
-                }
-            ");
+            $attributesCode
+            #[\AllowDynamicProperties]
+            final class $className extends $baseClass implements $hasPrintableTestCaseClassFQN {
+                $traitsCode
+
+                private static \$__filename = '$filename';
+
+                $methodsCode
+            }
+            PHP;
+
+            eval($classCode);
         } catch (ParseError $caught) {
-            throw new RuntimeException(sprintf('Unable to create test case for test file at %s', $filename), 1, $caught);
+            throw new RuntimeException(sprintf(
+                "Unable to create test case for test file at %s. \n %s",
+                $filename,
+                $classCode
+            ), 1, $caught);
         }
-
-        return $classFQN;
     }
 
     /**
-     * Determine if the test case will receive argument input from Pest, or not.
+     * Adds the given Method to the Test Case.
      */
-    public function receivesArguments(): bool
+    public function addMethod(TestCaseMethodFactory $method): void
     {
-        return count($this->datasets) > 0
-            || $this->factoryProxies->count('addDependencies') > 0;
+        if ($method->description === null) {
+            throw new TestDescriptionMissing($method->filename);
+        }
+
+        if (array_key_exists($method->description, $this->methods)) {
+            throw new TestAlreadyExist($method->filename, $method->description);
+        }
+
+        if (
+            $method->closure instanceof \Closure &&
+            (new \ReflectionFunction($method->closure))->isStatic()
+        ) {
+
+            throw new TestClosureMustNotBeStatic($method);
+        }
+
+        if (! $method->receivesArguments()) {
+            if (! $method->closure instanceof \Closure) {
+                throw ShouldNotHappen::fromMessage('The test closure may not be empty.');
+            }
+
+            $arguments = Reflection::getFunctionArguments($method->closure);
+
+            if ($arguments !== []) {
+                throw new DatasetMissing($method->filename, $method->description, $arguments);
+            }
+        }
+
+        $this->methods[$method->description] = $method;
+    }
+
+    /**
+     * Checks if a test case has a method.
+     */
+    public function hasMethod(string $methodName): bool
+    {
+        foreach ($this->methods as $method) {
+            if ($method->description === null) {
+                throw ShouldNotHappen::fromMessage('The test description may not be empty.');
+            }
+
+            if ($methodName === Str::evaluable($method->description)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Gets a Method by the given name.
+     */
+    public function getMethod(string $methodName): TestCaseMethodFactory
+    {
+        foreach ($this->methods as $method) {
+            if ($method->description === null) {
+                throw ShouldNotHappen::fromMessage('The test description may not be empty.');
+            }
+
+            if ($methodName === Str::evaluable($method->description)) {
+                return $method;
+            }
+        }
+
+        throw ShouldNotHappen::fromMessage(sprintf('Method %s not found.', $methodName));
     }
 }

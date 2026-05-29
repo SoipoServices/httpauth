@@ -4,93 +4,123 @@ declare(strict_types=1);
 
 namespace Pest;
 
+use Attribute;
 use BadMethodCallException;
 use Closure;
-use Error;
 use InvalidArgumentException;
+use OutOfRangeException;
+use Pest\Arch\Contracts\ArchExpectation;
+use Pest\Arch\Expectations\Targeted;
+use Pest\Arch\Expectations\ToBeUsedIn;
+use Pest\Arch\Expectations\ToBeUsedInNothing;
+use Pest\Arch\Expectations\ToOnlyBeUsedIn;
+use Pest\Arch\Expectations\ToOnlyUse;
+use Pest\Arch\Expectations\ToUse;
+use Pest\Arch\Expectations\ToUseNothing;
+use Pest\Arch\PendingArchExpectation;
+use Pest\Arch\Support\FileLineFinder;
 use Pest\Concerns\Extendable;
-use Pest\Concerns\RetrievesValues;
-use Pest\Support\Arr;
-use Pest\Support\NullClosure;
-use PHPUnit\Framework\Assert;
-use PHPUnit\Framework\Constraint\Constraint;
+use Pest\Concerns\Pipeable;
+use Pest\Concerns\Retrievable;
+use Pest\Exceptions\ExpectationNotFound;
+use Pest\Exceptions\InvalidExpectation;
+use Pest\Exceptions\InvalidExpectationValue;
+use Pest\Expectations\EachExpectation;
+use Pest\Expectations\HigherOrderExpectation;
+use Pest\Expectations\OppositeExpectation;
+use Pest\Matchers\Any;
+use Pest\Support\ExpectationPipeline;
+use Pest\Support\Reflection;
+use PHPUnit\Architecture\Elements\ObjectDescription;
 use PHPUnit\Framework\ExpectationFailedException;
-use ReflectionFunction;
-use ReflectionNamedType;
-use SebastianBergmann\Exporter\Exporter;
-use Throwable;
+use ReflectionEnum;
+use ReflectionMethod;
+use ReflectionProperty;
 
 /**
- * @internal
- *
  * @template TValue
  *
- * @property Expectation $not  Creates the opposite expectation.
- * @property Each        $each Creates an expectation on each element on the traversable value.
+ * @property OppositeExpectation $not Creates the opposite expectation.
+ * @property EachExpectation $each Creates an expectation on each element on the traversable value.
+ * @property PendingArchExpectation $classes
+ * @property PendingArchExpectation $traits
+ * @property PendingArchExpectation $interfaces
+ * @property PendingArchExpectation $enums
+ *
+ * @mixin Mixins\Expectation<TValue>
+ * @mixin PendingArchExpectation
  */
 final class Expectation
 {
-    use Extendable {
-        __call as __extendsCall;
-    }
-    use RetrievesValues;
-
-    /**
-     * The expectation value.
-     *
-     * @readonly
-     *
-     * @var mixed
-     */
-    public $value;
-
-    /**
-     * The exporter instance, if any.
-     *
-     * @readonly
-     *
-     * @var Exporter|null
-     */
-    private $exporter;
+    use Extendable;
+    use Pipeable;
+    use Retrievable;
 
     /**
      * Creates a new expectation.
      *
-     * @param TValue $value
+     * @param  TValue  $value
      */
-    public function __construct($value)
-    {
-        $this->value = $value;
+    public function __construct(
+        public mixed $value
+    ) {
+        // ..
     }
 
     /**
      * Creates a new expectation.
      *
-     * @param TValue $value
+     * @template TAndValue
      *
-     * @return Expectation<TValue>
+     * @param  TAndValue  $value
+     * @return self<TAndValue>
      */
-    public function and($value): Expectation
+    public function and(mixed $value): Expectation
     {
-        return new self($value);
+        return $value instanceof self ? $value : new self($value);
     }
 
     /**
      * Creates a new expectation with the decoded JSON value.
+     *
+     * @return self<array<int|string, mixed>|bool>
      */
     public function json(): Expectation
     {
-        return $this->toBeJson()->and(json_decode($this->value, true));
+        if (! is_string($this->value)) {
+            InvalidExpectationValue::expected('string');
+        }
+
+        $this->toBeJson();
+
+        /** @var array<int|string, mixed>|bool $value */
+        $value = json_decode($this->value, true, 512, JSON_THROW_ON_ERROR);
+
+        return $this->and($value);
+    }
+
+    /**
+     * Dump the expectation value.
+     *
+     * @return self<TValue>
+     */
+    public function dump(mixed ...$arguments): self
+    {
+        if (function_exists('dump')) {
+            dump($this->value, ...$arguments);
+        } else {
+            var_dump($this->value);
+        }
+
+        return $this;
     }
 
     /**
      * Dump the expectation value and end the script.
      *
-     * @param mixed $arguments
-     *
      * @return never
      */
-    public function dd(...$arguments): void
+    public function dd(mixed ...$arguments): void
     {
         if (function_exists('dd')) {
             dd($this->value, ...$arguments);
@@ -102,11 +132,45 @@ final class Expectation
     }
 
     /**
+     * Dump the expectation value when the result of the condition is truthy.
+     *
+     * @param  (Closure(TValue): bool)|bool  $condition
+     * @return self<TValue>
+     */
+    public function ddWhen(Closure|bool $condition, mixed ...$arguments): Expectation
+    {
+        $condition = $condition instanceof Closure ? $condition($this->value) : $condition;
+
+        if (! $condition) {
+            return $this;
+        }
+
+        $this->dd(...$arguments);
+    }
+
+    /**
+     * Dump the expectation value when the result of the condition is falsy.
+     *
+     * @param  (Closure(TValue): bool)|bool  $condition
+     * @return self<TValue>
+     */
+    public function ddUnless(Closure|bool $condition, mixed ...$arguments): Expectation
+    {
+        $condition = $condition instanceof Closure ? $condition($this->value) : $condition;
+
+        if ($condition) {
+            return $this;
+        }
+
+        $this->dd(...$arguments);
+    }
+
+    /**
      * Send the expectation value to Ray along with all given arguments.
      *
-     * @param mixed $arguments
+     * @return self<TValue>
      */
-    public function ray(...$arguments): self
+    public function ray(mixed ...$arguments): self
     {
         if (function_exists('ray')) {
             ray($this->value, ...$arguments);
@@ -117,6 +181,8 @@ final class Expectation
 
     /**
      * Creates the opposite expectation for the value.
+     *
+     * @return OppositeExpectation<TValue>
      */
     public function not(): OppositeExpectation
     {
@@ -125,20 +191,22 @@ final class Expectation
 
     /**
      * Creates an expectation on each item of the iterable "value".
+     *
+     * @return EachExpectation<TValue>
      */
-    public function each(callable $callback = null): Each
+    public function each(?callable $callback = null): EachExpectation
     {
-        if (!is_iterable($this->value)) {
+        if (! is_iterable($this->value)) {
             throw new BadMethodCallException('Expectation value is not iterable.');
         }
 
         if (is_callable($callback)) {
-            foreach ($this->value as $item) {
-                $callback(new self($item));
+            foreach ($this->value as $key => $item) {
+                $callback(new self($item), $key);
             }
         }
 
-        return new Each($this);
+        return new EachExpectation($this);
     }
 
     /**
@@ -146,37 +214,35 @@ final class Expectation
      *
      * @template TSequenceValue
      *
-     * @param callable(self, self): void|TSequenceValue ...$callbacks
+     * @param  (callable(self<TValue>, self<string|int>): void)|TSequenceValue  ...$callbacks
+     * @return self<TValue>
      */
-    public function sequence(...$callbacks): Expectation
+    public function sequence(mixed ...$callbacks): self
     {
-        if (!is_iterable($this->value)) {
+        if (! is_iterable($this->value)) {
             throw new BadMethodCallException('Expectation value is not iterable.');
         }
 
-        $value          = is_array($this->value) ? $this->value : iterator_to_array($this->value);
-        $keys           = array_keys($value);
-        $values         = array_values($value);
-        $callbacksCount = count($callbacks);
-
-        $index = 0;
-
-        while (count($callbacks) < count($values)) {
-            $callbacks[] = $callbacks[$index];
-            $index       = $index < count($values) - 1 ? $index + 1 : 0;
+        if ($callbacks === []) {
+            throw new InvalidArgumentException('No sequence expectations defined.');
         }
 
-        if ($callbacksCount > count($values)) {
-            Assert::assertLessThanOrEqual(count($value), count($callbacks));
-        }
+        $index = $valuesCount = 0;
 
-        foreach ($values as $key => $item) {
-            if ($callbacks[$key] instanceof Closure) {
-                call_user_func($callbacks[$key], new self($item), new self($keys[$key]));
-                continue;
+        foreach ($this->value as $key => $value) {
+            $valuesCount++;
+
+            if ($callbacks[$index] instanceof Closure) {
+                $callbacks[$index](new self($value), new self($key));
+            } else {
+                (new self($value))->toEqual($callbacks[$index]);
             }
 
-            (new self($item))->toEqual($callbacks[$key]);
+            $index = isset($callbacks[$index + 1]) ? $index + 1 : 0;
+        }
+
+        if ($valuesCount < count($callbacks)) {
+            throw new OutOfRangeException('Sequence expectations are more than the iterable items.');
         }
 
         return $this;
@@ -187,23 +253,18 @@ final class Expectation
      *
      * @template TMatchSubject of array-key
      *
-     * @param callable(): TMatchSubject|TMatchSubject $subject
-     * @param array<TMatchSubject, (callable(Expectation<TValue>): mixed)|TValue> $expressions
+     * @param  (callable(): TMatchSubject)|TMatchSubject  $subject
+     * @param  array<TMatchSubject, (callable(self<TValue>): mixed)|TValue>  $expressions
+     * @return self<TValue>
      */
-    public function match($subject, array $expressions): Expectation
+    public function match(mixed $subject, array $expressions): self
     {
-        $subject = is_callable($subject)
-            ? $subject
-            : function () use ($subject) {
-                return $subject;
-            };
-
-        $subject   = $subject();
+        $subject = $subject instanceof Closure ? $subject() : $subject;
 
         $matched = false;
 
         foreach ($expressions as $key => $callback) {
-            if ($subject != $key) {
+            if ($subject != $key) { // @pest-arch-ignore-line
                 continue;
             }
 
@@ -211,6 +272,7 @@ final class Expectation
 
             if (is_callable($callback)) {
                 $callback(new self($this->value));
+
                 continue;
             }
 
@@ -229,33 +291,31 @@ final class Expectation
     /**
      * Apply the callback if the given "condition" is falsy.
      *
-     * @param  (callable(): bool)|bool $condition
-     * @param callable(Expectation<TValue>): mixed $callback
+     * @param  (callable(): bool)|bool  $condition
+     * @param  callable(Expectation<TValue>): mixed  $callback
+     * @return self<TValue>
      */
-    public function unless($condition, callable $callback): Expectation
+    public function unless(callable|bool $condition, callable $callback): Expectation
     {
         $condition = is_callable($condition)
             ? $condition
-            : static function () use ($condition): bool {
-                return (bool) $condition; // @phpstan-ignore-line
-            };
+            : static fn (): bool => $condition;
 
-        return $this->when(!$condition(), $callback);
+        return $this->when(! $condition(), $callback);
     }
 
     /**
      * Apply the callback if the given "condition" is truthy.
      *
-     * @param  (callable(): bool)|bool $condition
-     * @param callable(Expectation<TValue>): mixed $callback
+     * @param  (callable(): bool)|bool  $condition
+     * @param  callable(self<TValue>): mixed  $callback
+     * @return self<TValue>
      */
-    public function when($condition, callable $callback): Expectation
+    public function when(callable|bool $condition, callable $callback): self
     {
         $condition = is_callable($condition)
             ? $condition
-            : static function () use ($condition): bool {
-                return (bool) $condition; // @phpstan-ignore-line
-            };
+            : static fn (): bool => $condition;
 
         if ($condition()) {
             $callback($this->and($this->value));
@@ -265,726 +325,790 @@ final class Expectation
     }
 
     /**
-     * Asserts that two variables have the same type and
-     * value. Used on objects, it asserts that two
-     * variables reference the same object.
+     * Dynamically calls methods on the class or creates a new higher order expectation.
      *
-     * @param mixed $expected
+     * @param  array<int, mixed>  $parameters
+     * @return Expectation<TValue>|HigherOrderExpectation<Expectation<TValue>, TValue>
      */
-    public function toBe($expected): Expectation
+    public function __call(string $method, array $parameters): Expectation|HigherOrderExpectation|PendingArchExpectation
     {
-        Assert::assertSame($expected, $this->value);
+        if (! self::hasMethod($method)) {
+            if (! is_object($this->value) && method_exists(PendingArchExpectation::class, $method)) {
+                $pendingArchExpectation = new PendingArchExpectation($this, []);
 
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is empty.
-     */
-    public function toBeEmpty(): Expectation
-    {
-        Assert::assertEmpty($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is true.
-     */
-    public function toBeTrue(): Expectation
-    {
-        Assert::assertTrue($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is truthy.
-     */
-    public function toBeTruthy(): Expectation
-    {
-        Assert::assertTrue((bool) $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is false.
-     */
-    public function toBeFalse(): Expectation
-    {
-        Assert::assertFalse($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is falsy.
-     */
-    public function toBeFalsy(): Expectation
-    {
-        Assert::assertFalse((bool) $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is greater than $expected.
-     *
-     * @param int|float $expected
-     */
-    public function toBeGreaterThan($expected): Expectation
-    {
-        Assert::assertGreaterThan($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is greater than or equal to $expected.
-     *
-     * @param int|float $expected
-     */
-    public function toBeGreaterThanOrEqual($expected): Expectation
-    {
-        Assert::assertGreaterThanOrEqual($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is less than or equal to $expected.
-     *
-     * @param int|float $expected
-     */
-    public function toBeLessThan($expected): Expectation
-    {
-        Assert::assertLessThan($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is less than $expected.
-     *
-     * @param int|float $expected
-     */
-    public function toBeLessThanOrEqual($expected): Expectation
-    {
-        Assert::assertLessThanOrEqual($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that $needle is an element of the value.
-     *
-     * @param mixed $needles
-     */
-    public function toContain(...$needles): Expectation
-    {
-        foreach ($needles as $needle) {
-            if (is_string($this->value)) {
-                Assert::assertStringContainsString($needle, $this->value);
-            } else {
-                Assert::assertContains($needle, $this->value);
-            }
-        }
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value starts with $expected.
-     */
-    public function toStartWith(string $expected): Expectation
-    {
-        Assert::assertStringStartsWith($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value ends with $expected.
-     */
-    public function toEndWith(string $expected): Expectation
-    {
-        Assert::assertStringEndsWith($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that $number matches value's Length.
-     */
-    public function toHaveLength(int $number): Expectation
-    {
-        if (is_string($this->value)) {
-            Assert::assertEquals($number, mb_strlen($this->value));
-
-            return $this;
-        }
-
-        if (is_iterable($this->value)) {
-            return $this->toHaveCount($number);
-        }
-
-        if (is_object($this->value)) {
-            if (method_exists($this->value, 'toArray')) {
-                $array = $this->value->toArray();
-            } else {
-                $array = (array) $this->value;
+                return $pendingArchExpectation->$method(...$parameters); // @phpstan-ignore-line
             }
 
-            Assert::assertCount($number, $array);
-
-            return $this;
-        }
-
-        throw new BadMethodCallException('Expectation value length is not countable.');
-    }
-
-    /**
-     * Asserts that $count matches the number of elements of the value.
-     */
-    public function toHaveCount(int $count): Expectation
-    {
-        Assert::assertCount($count, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value contains the property $name.
-     *
-     * @param mixed $value
-     */
-    public function toHaveProperty(string $name, $value = null): Expectation
-    {
-        $this->toBeObject();
-
-        Assert::assertTrue(property_exists($this->value, $name));
-
-        if (func_num_args() > 1) {
-            /* @phpstan-ignore-next-line */
-            Assert::assertEquals($value, $this->value->{$name});
-        }
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value contains the provided properties $names.
-     *
-     * @param iterable<array-key, string> $names
-     */
-    public function toHaveProperties(iterable $names): Expectation
-    {
-        foreach ($names as $name) {
-            $this->toHaveProperty($name);
-        }
-
-        return $this;
-    }
-
-    /**
-     * Asserts that two variables have the same value.
-     *
-     * @param mixed $expected
-     */
-    public function toEqual($expected): Expectation
-    {
-        Assert::assertEquals($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that two variables have the same value.
-     * The contents of $expected and the $this->value are
-     * canonicalized before they are compared. For instance, when the two
-     * variables $expected and $this->value are arrays, then these arrays
-     * are sorted before they are compared. When $expected and $this->value
-     * are objects, each object is converted to an array containing all
-     * private, protected and public attributes.
-     *
-     * @param mixed $expected
-     */
-    public function toEqualCanonicalizing($expected): Expectation
-    {
-        Assert::assertEqualsCanonicalizing($expected, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the absolute difference between the value and $expected
-     * is lower than $delta.
-     *
-     * @param mixed $expected
-     */
-    public function toEqualWithDelta($expected, float $delta): Expectation
-    {
-        Assert::assertEqualsWithDelta($expected, $this->value, $delta);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is one of the given values.
-     *
-     * @param iterable<int|string, mixed> $values
-     */
-    public function toBeIn(iterable $values): Expectation
-    {
-        Assert::assertContains($this->value, $values);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is infinite.
-     */
-    public function toBeInfinite(): Expectation
-    {
-        Assert::assertInfinite($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is an instance of $class.
-     *
-     * @param string $class
-     */
-    public function toBeInstanceOf($class): Expectation
-    {
-        /* @phpstan-ignore-next-line */
-        Assert::assertInstanceOf($class, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is an array.
-     */
-    public function toBeArray(): Expectation
-    {
-        Assert::assertIsArray($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type bool.
-     */
-    public function toBeBool(): Expectation
-    {
-        Assert::assertIsBool($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type callable.
-     */
-    public function toBeCallable(): Expectation
-    {
-        Assert::assertIsCallable($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type float.
-     */
-    public function toBeFloat(): Expectation
-    {
-        Assert::assertIsFloat($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type int.
-     */
-    public function toBeInt(): Expectation
-    {
-        Assert::assertIsInt($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type iterable.
-     */
-    public function toBeIterable(): Expectation
-    {
-        Assert::assertIsIterable($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type numeric.
-     */
-    public function toBeNumeric(): Expectation
-    {
-        Assert::assertIsNumeric($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type object.
-     */
-    public function toBeObject(): Expectation
-    {
-        Assert::assertIsObject($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type resource.
-     */
-    public function toBeResource(): Expectation
-    {
-        Assert::assertIsResource($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type scalar.
-     */
-    public function toBeScalar(): Expectation
-    {
-        Assert::assertIsScalar($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is of type string.
-     */
-    public function toBeString(): Expectation
-    {
-        Assert::assertIsString($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is a JSON string.
-     */
-    public function toBeJson(): Expectation
-    {
-        Assert::assertIsString($this->value);
-        Assert::assertJson($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is NAN.
-     */
-    public function toBeNan(): Expectation
-    {
-        Assert::assertNan($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is null.
-     */
-    public function toBeNull(): Expectation
-    {
-        Assert::assertNull($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value array has the provided $key.
-     *
-     * @param string|int $key
-     * @param mixed      $value
-     */
-    public function toHaveKey($key, $value = null): Expectation
-    {
-        if (is_object($this->value) && method_exists($this->value, 'toArray')) {
-            $array = $this->value->toArray();
-        } else {
-            $array = (array) $this->value;
-        }
-
-        try {
-            Assert::assertTrue(Arr::has($array, $key));
+            if (! is_object($this->value)) {
+                throw new BadMethodCallException(sprintf(
+                    'Method "%s" does not exist in %s.',
+                    $method,
+                    gettype($this->value)
+                ));
+            }
 
             /* @phpstan-ignore-next-line */
-        } catch (ExpectationFailedException $exception) {
-            throw new ExpectationFailedException("Failed asserting that an array has the key '$key'", $exception->getComparisonFailure());
+            return new HigherOrderExpectation($this, call_user_func_array($this->value->$method(...), $parameters));
         }
 
-        if (func_num_args() > 1) {
-            Assert::assertEquals($value, Arr::get($array, $key));
-        }
+        $closure = $this->getExpectationClosure($method);
+        $reflectionClosure = new \ReflectionFunction($closure);
+        $expectation = $reflectionClosure->getClosureThis();
+
+        assert(is_object($expectation));
+
+        ExpectationPipeline::for($closure)
+            ->send(...$parameters)
+            ->through($this->pipes($method, $expectation, Expectation::class))
+            ->run();
 
         return $this;
     }
 
     /**
-     * Asserts that the value array has the provided $keys.
+     * Creates a new expectation closure from the given name.
      *
-     * @param array<int, int|string> $keys
+     * @throws ExpectationNotFound
      */
-    public function toHaveKeys(array $keys): Expectation
+    private function getExpectationClosure(string $name): Closure
     {
-        foreach ($keys as $key) {
-            $this->toHaveKey($key);
+        if (method_exists(Mixins\Expectation::class, $name)) {
+            // @phpstan-ignore-next-line
+            return Closure::fromCallable([new Mixins\Expectation($this->value), $name]);
         }
 
-        return $this;
-    }
+        if (self::hasExtend($name)) {
+            $extend = self::$extends[$name]->bindTo($this, Expectation::class);
 
-    /**
-     * Asserts that the value is a directory.
-     */
-    public function toBeDirectory(): Expectation
-    {
-        Assert::assertDirectoryExists($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is a directory and is readable.
-     */
-    public function toBeReadableDirectory(): Expectation
-    {
-        Assert::assertDirectoryIsReadable($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is a directory and is writable.
-     */
-    public function toBeWritableDirectory(): Expectation
-    {
-        Assert::assertDirectoryIsWritable($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is a file.
-     */
-    public function toBeFile(): Expectation
-    {
-        Assert::assertFileExists($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is a file and is readable.
-     */
-    public function toBeReadableFile(): Expectation
-    {
-        Assert::assertFileIsReadable($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value is a file and is writable.
-     */
-    public function toBeWritableFile(): Expectation
-    {
-        Assert::assertFileIsWritable($this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value array matches the given array subset.
-     *
-     * @param array<int|string, mixed> $array
-     */
-    public function toMatchArray($array): Expectation
-    {
-        if (is_object($this->value) && method_exists($this->value, 'toArray')) {
-            $valueAsArray = $this->value->toArray();
-        } else {
-            $valueAsArray = (array) $this->value;
-        }
-
-        foreach ($array as $key => $value) {
-            Assert::assertArrayHasKey($key, $valueAsArray);
-
-            Assert::assertEquals(
-                $value,
-                $valueAsArray[$key],
-                sprintf(
-                    'Failed asserting that an array has a key %s with the value %s.',
-                    $this->export($key),
-                    $this->export($valueAsArray[$key]),
-                ),
-            );
-        }
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value object matches a subset
-     * of the properties of an given object.
-     *
-     * @param array<string, mixed>|object $object
-     */
-    public function toMatchObject($object): Expectation
-    {
-        foreach ((array) $object as $property => $value) {
-            Assert::assertTrue(property_exists($this->value, $property));
-
-            /* @phpstan-ignore-next-line */
-            $propertyValue = $this->value->{$property};
-            Assert::assertEquals(
-                $value,
-                $propertyValue,
-                sprintf(
-                    'Failed asserting that an object has a property %s with the value %s.',
-                    $this->export($property),
-                    $this->export($propertyValue),
-                ),
-            );
-        }
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value matches a regular expression.
-     */
-    public function toMatch(string $expression): Expectation
-    {
-        Assert::assertMatchesRegularExpression($expression, $this->value);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that the value matches a constraint.
-     */
-    public function toMatchConstraint(Constraint $constraint): Expectation
-    {
-        Assert::assertThat($this->value, $constraint);
-
-        return $this;
-    }
-
-    /**
-     * Asserts that executing value throws an exception.
-     *
-     * @param (Closure(Throwable): mixed)|string $exception
-     */
-    public function toThrow($exception, string $exceptionMessage = null): Expectation
-    {
-        $callback = NullClosure::create();
-
-        if ($exception instanceof Closure) {
-            $callback   = $exception;
-            $parameters = (new ReflectionFunction($exception))->getParameters();
-
-            if (1 !== count($parameters)) {
-                throw new InvalidArgumentException('The given closure must have a single parameter type-hinted as the class string.');
+            if ($extend != false) { // @pest-arch-ignore-line
+                return $extend;
             }
-
-            if (!($type = $parameters[0]->getType()) instanceof ReflectionNamedType) {
-                throw new InvalidArgumentException('The given closure\'s parameter must be type-hinted as the class string.');
-            }
-
-            $exception = $type->getName();
         }
 
-        try {
-            ($this->value)();
-        } catch (Throwable $e) {
-            if (!class_exists($exception)) {
-                if ($e instanceof Error && (bool) preg_match("/Class [\"']{$exception}[\"'] not found/", $e->getMessage())) {
-                    throw $e;
-                }
-
-                Assert::assertStringContainsString($exception, $e->getMessage());
-
-                return $this;
-            }
-
-            if ($exceptionMessage !== null) {
-                Assert::assertStringContainsString($exceptionMessage, $e->getMessage());
-            }
-
-            Assert::assertInstanceOf($exception, $e);
-            $callback($e);
-
-            return $this;
-        }
-
-        if (!class_exists($exception)) {
-            throw new ExpectationFailedException("Exception with message \"{$exception}\" not thrown.");
-        }
-
-        throw new ExpectationFailedException("Exception \"{$exception}\" not thrown.");
+        throw ExpectationNotFound::fromName($name);
     }
 
     /**
-     * Exports the given value.
+     * Dynamically calls methods on the class without any arguments or creates a new higher order expectation.
      *
-     * @param mixed $value
-     */
-    private function export($value): string
-    {
-        if ($this->exporter === null) {
-            $this->exporter = new Exporter();
-        }
-
-        return $this->exporter->export($value);
-    }
-
-    /**
-     * Dynamically handle calls to the class or
-     * creates a new higher order expectation.
-     *
-     * @param array<int, mixed> $parameters
-     *
-     * @return HigherOrderExpectation|mixed
-     */
-    public function __call(string $method, array $parameters)
-    {
-        if (!static::hasExtend($method)) {
-            /* @phpstan-ignore-next-line */
-            return new HigherOrderExpectation($this, $this->value->$method(...$parameters));
-        }
-
-        return $this->__extendsCall($method, $parameters);
-    }
-
-    /**
-     * Dynamically calls methods on the class without any arguments
-     * or creates a new higher order expectation.
-     *
-     * @return Expectation|HigherOrderExpectation
+     * @return Expectation<TValue>|OppositeExpectation<TValue>|EachExpectation<TValue>|HigherOrderExpectation<Expectation<TValue>, TValue|null>|TValue
      */
     public function __get(string $name)
     {
-        if (!method_exists($this, $name) && !static::hasExtend($name)) {
+        if (! self::hasMethod($name)) {
+            if (! is_object($this->value) && method_exists(PendingArchExpectation::class, $name)) {
+                /* @phpstan-ignore-next-line */
+                return $this->{$name}();
+            }
+
+            /* @phpstan-ignore-next-line */
             return new HigherOrderExpectation($this, $this->retrieve($name, $this->value));
         }
 
         /* @phpstan-ignore-next-line */
         return $this->{$name}();
+    }
+
+    /**
+     * Checks if the given expectation method exists.
+     */
+    public static function hasMethod(string $name): bool
+    {
+        return method_exists(self::class, $name)
+            || method_exists(Mixins\Expectation::class, $name)
+            || self::hasExtend($name);
+    }
+
+    /**
+     * Matches any value.
+     */
+    public function any(): Any
+    {
+        return new Any;
+    }
+
+    /**
+     * Asserts that the given expectation target use the given dependencies.
+     *
+     * @param  array<int, string>|string  $targets
+     */
+    public function toUse(array|string $targets): ArchExpectation
+    {
+        return ToUse::make($this, $targets);
+    }
+
+    /**
+     * Asserts that the given expectation target does have the given permissions
+     */
+    public function toHaveFileSystemPermissions(string $permissions): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => substr(sprintf('%o', fileperms($object->path)), -4) === $permissions,
+            sprintf('permissions to be [%s]', $permissions),
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, '<?php')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to have line count less than the given number.
+     */
+    public function toHaveLineCountLessThan(int $lines): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => count(file($object->path)) < $lines, // @phpstan-ignore-line
+            sprintf('to have less than %d lines of code', $lines),
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, '<?php')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target have all methods documented.
+     */
+    public function toHaveMethodsDocumented(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) === false
+                || array_filter(
+                    Reflection::getMethodsFromReflectionClass($object->reflectionClass),
+                    fn (ReflectionMethod $method): bool => (enum_exists($object->name) === false || in_array($method->name, ['from', 'tryFrom', 'cases'], true) === false)
+                        && realpath($method->getFileName() ?: '/') === realpath($object->path) // @phpstan-ignore-line
+                        && $method->getDocComment() === false,
+                ) === [],
+            'to have methods with documentation / annotations',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class'))
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target have all properties documented.
+     */
+    public function toHavePropertiesDocumented(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) === false
+                || array_filter(
+                    Reflection::getPropertiesFromReflectionClass($object->reflectionClass),
+                    fn (ReflectionProperty $property): bool => (enum_exists($object->name) === false || in_array($property->name, ['value', 'name'], true) === false)
+                        && realpath($property->getDeclaringClass()->getFileName() ?: '/') === realpath($object->path) // @phpstan-ignore-line
+                        && $property->isPromoted() === false
+                        && $property->getDocComment() === false,
+                ) === [],
+            'to have properties with documentation / annotations',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class'))
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target use the "declare(strict_types=1)" declaration.
+     */
+    public function toUseStrictTypes(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => (bool) preg_match('/^<\?php\s*(\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$)|\s)*declare\s*\(\s*strict_types\s*=\s*1\s*\)\s*;/m', (string) file_get_contents($object->path)),
+            'to use strict types',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, '<?php')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target uses strict equality.
+     */
+    public function toUseStrictEquality(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => ! str_contains((string) file_get_contents($object->path), ' == ') && ! str_contains((string) file_get_contents($object->path), ' != '),
+            'to use strict equality',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, ' == ') || str_contains($line, ' != ')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target is final.
+     */
+    public function toBeFinal(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => ! enum_exists($object->name) && isset($object->reflectionClass) && $object->reflectionClass->isFinal(),
+            'to be final',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target is readonly.
+     */
+    public function toBeReadonly(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => ! enum_exists($object->name) && isset($object->reflectionClass) && $object->reflectionClass->isReadOnly() && assert(true), // @phpstan-ignore-line
+            'to be readonly',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target is trait.
+     */
+    public function toBeTrait(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->isTrait(),
+            'to be trait',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation targets are traits.
+     */
+    public function toBeTraits(): ArchExpectation
+    {
+        return $this->toBeTrait();
+    }
+
+    /**
+     * Asserts that the given expectation target is abstract.
+     */
+    public function toBeAbstract(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->isAbstract(),
+            'to be abstract',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target has a specific method.
+     *
+     * @param  array<int, string>|string  $method
+     */
+    public function toHaveMethod(array|string $method): ArchExpectation
+    {
+        $methods = is_array($method) ? $method : [$method];
+
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => count(array_filter($methods, fn (string $method): bool => isset($object->reflectionClass) && $object->reflectionClass->hasMethod($method))) === count($methods),
+            sprintf("to have method '%s'", implode("', '", $methods)),
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target has a specific methods.
+     *
+     * @param  array<int, string>  $methods
+     */
+    public function toHaveMethods(array $methods): ArchExpectation
+    {
+        return $this->toHaveMethod($methods);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toHavePublicMethodsBesides(): void
+    {
+        throw InvalidExpectation::fromMethods(['toHavePublicMethodsBesides']);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toHavePublicMethods(): void
+    {
+        throw InvalidExpectation::fromMethods(['toHavePublicMethods']);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toHaveProtectedMethodsBesides(): void
+    {
+        throw InvalidExpectation::fromMethods(['toHaveProtectedMethodsBesides']);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toHaveProtectedMethods(): void
+    {
+        throw InvalidExpectation::fromMethods(['toHaveProtectedMethods']);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toHavePrivateMethodsBesides(): void
+    {
+        throw InvalidExpectation::fromMethods(['toHavePrivateMethodsBesides']);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toHavePrivateMethods(): void
+    {
+        throw InvalidExpectation::fromMethods(['toHavePrivateMethods']);
+    }
+
+    /**
+     * Asserts that the given expectation target is enum.
+     */
+    public function toBeEnum(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->isEnum(),
+            'to be enum',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation targets are enums.
+     */
+    public function toBeEnums(): ArchExpectation
+    {
+        return $this->toBeEnum();
+    }
+
+    /**
+     * Asserts that the given expectation target is a class.
+     */
+    public function toBeClass(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => class_exists($object->name) && ! enum_exists($object->name),
+            'to be class',
+            FileLineFinder::where(fn (string $line): bool => true),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation targets are classes.
+     */
+    public function toBeClasses(): ArchExpectation
+    {
+        return $this->toBeClass();
+    }
+
+    /**
+     * Asserts that the given expectation target is interface.
+     */
+    public function toBeInterface(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->isInterface(),
+            'to be interface',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation targets are interfaces.
+     */
+    public function toBeInterfaces(): ArchExpectation
+    {
+        return $this->toBeInterface();
+    }
+
+    /**
+     * Asserts that the given expectation target to be subclass of the given class.
+     */
+    public function toExtend(string $class): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && ($class === $object->reflectionClass->getName() || $object->reflectionClass->isSubclassOf($class)),
+            sprintf("to extend '%s'", $class),
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to be have a parent class.
+     */
+    public function toExtendNothing(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => $object->reflectionClass->getParentClass() === false,
+            'to extend nothing',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to use the given trait.
+     */
+    public function toUseTrait(string $trait): ArchExpectation
+    {
+        return $this->toUseTraits($trait);
+    }
+
+    /**
+     * Asserts that the given expectation target to use the given traits.
+     *
+     * @param  array<int, string>|string  $traits
+     */
+    public function toUseTraits(array|string $traits): ArchExpectation
+    {
+        $traits = is_array($traits) ? $traits : [$traits];
+
+        return Targeted::make(
+            $this,
+            function (ObjectDescription $object) use ($traits): bool {
+                foreach ($traits as $trait) {
+                    if (isset($object->reflectionClass) === false) {
+                        return false;
+                    }
+
+                    if (! in_array($trait, $object->reflectionClass->getTraitNames(), true)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            },
+            "to use traits '".implode("', '", $traits)."'",
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to not implement any interfaces.
+     */
+    public function toImplementNothing(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->getInterfaceNames() === [],
+            'to implement nothing',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to only implement the given interfaces.
+     *
+     * @param  array<int, string>|string  $interfaces
+     */
+    public function toOnlyImplement(array|string $interfaces): ArchExpectation
+    {
+        $interfaces = is_array($interfaces) ? $interfaces : [$interfaces];
+
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass)
+                && (count($interfaces) === count($object->reflectionClass->getInterfaceNames()))
+                && array_diff($interfaces, $object->reflectionClass->getInterfaceNames()) === [],
+            "to only implement '".implode("', '", $interfaces)."'",
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to have the given prefix.
+     */
+    public function toHavePrefix(string $prefix): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && str_starts_with($object->reflectionClass->getShortName(), $prefix),
+            "to have prefix '{$prefix}'",
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to have the given suffix.
+     */
+    public function toHaveSuffix(string $suffix): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && str_ends_with($object->reflectionClass->getName(), $suffix),
+            "to have suffix '{$suffix}'",
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target to implement the given interfaces.
+     *
+     * @param  array<int, string>|string  $interfaces
+     */
+    public function toImplement(array|string $interfaces): ArchExpectation
+    {
+        $interfaces = is_array($interfaces) ? $interfaces : [$interfaces];
+
+        return Targeted::make(
+            $this,
+            function (ObjectDescription $object) use ($interfaces): bool {
+                foreach ($interfaces as $interface) {
+                    if (! isset($object->reflectionClass) || ! $object->reflectionClass->implementsInterface($interface)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            },
+            "to implement '".implode("', '", $interfaces)."'",
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target "only" use on the given dependencies.
+     *
+     * @param  array<int, string>|string  $targets
+     */
+    public function toOnlyUse(array|string $targets): ArchExpectation
+    {
+        return ToOnlyUse::make($this, $targets);
+    }
+
+    /**
+     * Asserts that the given expectation target does not use any dependencies.
+     */
+    public function toUseNothing(): ArchExpectation
+    {
+        return ToUseNothing::make($this);
+    }
+
+    /**
+     * Not supported.
+     */
+    public function toBeUsed(): void
+    {
+        throw InvalidExpectation::fromMethods(['toBeUsed']);
+    }
+
+    /**
+     * Asserts that the given expectation dependency is used by the given targets.
+     *
+     * @param  array<int, string>|string  $targets
+     */
+    public function toBeUsedIn(array|string $targets): ArchExpectation
+    {
+        return ToBeUsedIn::make($this, $targets);
+    }
+
+    /**
+     * Asserts that the given expectation dependency is "only" used by the given targets.
+     *
+     * @param  array<int, string>|string  $targets
+     */
+    public function toOnlyBeUsedIn(array|string $targets): ArchExpectation
+    {
+        return ToOnlyBeUsedIn::make($this, $targets);
+    }
+
+    /**
+     * Asserts that the given expectation dependency is not used.
+     */
+    public function toBeUsedInNothing(): ArchExpectation
+    {
+        return ToBeUsedInNothing::make($this);
+    }
+
+    /**
+     * Asserts that the given expectation dependency is an invokable class.
+     */
+    public function toBeInvokable(): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->hasMethod('__invoke'),
+            'to be invokable',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class'))
+        );
+    }
+
+    /**
+     * Asserts that the given expectation is iterable and contains snake_case keys.
+     *
+     * @return self<TValue>
+     */
+    public function toHaveSnakeCaseKeys(string $message = ''): self
+    {
+        if (! is_iterable($this->value)) {
+            InvalidExpectationValue::expected('iterable');
+        }
+
+        foreach ($this->value as $k => $item) {
+            if (is_string($k)) {
+                $this->and($k)->toBeSnakeCase($message);
+            }
+
+            if (is_array($item)) {
+                $this->and($item)->toHaveSnakeCaseKeys($message);
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * Asserts that the given expectation is iterable and contains kebab-case keys.
+     *
+     * @return self<TValue>
+     */
+    public function toHaveKebabCaseKeys(string $message = ''): self
+    {
+        if (! is_iterable($this->value)) {
+            InvalidExpectationValue::expected('iterable');
+        }
+
+        foreach ($this->value as $k => $item) {
+            if (is_string($k)) {
+                $this->and($k)->toBeKebabCase($message);
+            }
+
+            if (is_array($item)) {
+                $this->and($item)->toHaveKebabCaseKeys($message);
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * Asserts that the given expectation is iterable and contains camelCase keys.
+     *
+     * @return self<TValue>
+     */
+    public function toHaveCamelCaseKeys(string $message = ''): self
+    {
+        if (! is_iterable($this->value)) {
+            InvalidExpectationValue::expected('iterable');
+        }
+
+        foreach ($this->value as $k => $item) {
+            if (is_string($k)) {
+                $this->and($k)->toBeCamelCase($message);
+            }
+
+            if (is_array($item)) {
+                $this->and($item)->toHaveCamelCaseKeys($message);
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * Asserts that the given expectation is iterable and contains StudlyCase keys.
+     *
+     * @return self<TValue>
+     */
+    public function toHaveStudlyCaseKeys(string $message = ''): self
+    {
+        if (! is_iterable($this->value)) {
+            InvalidExpectationValue::expected('iterable');
+        }
+
+        foreach ($this->value as $k => $item) {
+            if (is_string($k)) {
+                $this->and($k)->toBeStudlyCase($message);
+            }
+
+            if (is_array($item)) {
+                $this->and($item)->toHaveStudlyCaseKeys($message);
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * Asserts that the given expectation target to have the given attribute.
+     */
+    public function toHaveAttribute(string $attribute): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass) && $object->reflectionClass->getAttributes($attribute) !== [],
+            "to have attribute '{$attribute}'",
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation target has a constructor method.
+     */
+    public function toHaveConstructor(): ArchExpectation
+    {
+        return $this->toHaveMethod('__construct');
+    }
+
+    /**
+     * Asserts that the given expectation target has a destructor method.
+     */
+    public function toHaveDestructor(): ArchExpectation
+    {
+        return $this->toHaveMethod('__destruct');
+    }
+
+    /**
+     * Asserts that the given expectation target is a backed enum of given type.
+     */
+    private function toBeBackedEnum(string $backingType): ArchExpectation
+    {
+        return Targeted::make(
+            $this,
+            fn (ObjectDescription $object): bool => isset($object->reflectionClass)
+                && $object->reflectionClass->isEnum()
+                && (new ReflectionEnum($object->name))->isBacked() // @phpstan-ignore-line
+                && (string) (new ReflectionEnum($object->name))->getBackingType() === $backingType, // @phpstan-ignore-line
+            'to be '.$backingType.' backed enum',
+            FileLineFinder::where(fn (string $line): bool => str_contains($line, 'class')),
+        );
+    }
+
+    /**
+     * Asserts that the given expectation targets are string backed enums.
+     */
+    public function toBeStringBackedEnums(): ArchExpectation
+    {
+        return $this->toBeStringBackedEnum();
+    }
+
+    /**
+     * Asserts that the given expectation targets are int backed enums.
+     */
+    public function toBeIntBackedEnums(): ArchExpectation
+    {
+        return $this->toBeIntBackedEnum();
+    }
+
+    /**
+     * Asserts that the given expectation target is a string backed enum.
+     */
+    public function toBeStringBackedEnum(): ArchExpectation
+    {
+        return $this->toBeBackedEnum('string');
+    }
+
+    /**
+     * Asserts that the given expectation target is an int backed enum.
+     */
+    public function toBeIntBackedEnum(): ArchExpectation
+    {
+        return $this->toBeBackedEnum('int');
     }
 }

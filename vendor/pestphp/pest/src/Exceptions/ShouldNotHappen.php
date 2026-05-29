@@ -13,19 +13,18 @@ use RuntimeException;
 final class ShouldNotHappen extends RuntimeException
 {
     /**
-     * Creates a new instance of should not happen.
+     * Creates a new Exception instance.
      */
     public function __construct(Exception $exception)
     {
         $message = $exception->getMessage();
 
-        parent::__construct(sprintf(<<<EOF
+        parent::__construct(sprintf(<<<'EOF'
+This should not happen - please create an new issue here: https://github.com/pestphp/pest/issues
 
-This should not happen - please create an new issue here: https://github.com/pestphp/pest.
-
-- Issue: %s
-- PHP version: %s
-- Operating system: %s
+  Issue: %s
+  PHP version: %s
+  Operating system: %s
 EOF
             , $message, phpversion(), PHP_OS), 1, $exception);
     }
